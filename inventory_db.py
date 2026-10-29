@@ -194,3 +194,68 @@ def search_products(
 
     cursor = conn.execute(query, params)
     return cursor.fetchall()
+
+
+def format_cents(cents: int) -> str:
+    """Format an integer amount of cents as a standard currency string (e.g. 1050 -> '$10.50')."""
+    return f"${cents / 100:.2f}"
+
+
+def report_stock_value_by_supplier(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Calculate the total inventory value for each supplier, sorted highest value first."""
+    cursor = conn.execute(
+        """
+        SELECT s.name AS supplier_name,
+               COALESCE(SUM(p.unit_price * p.quantity_in_stock), 0) AS total_value
+        FROM suppliers s
+        LEFT JOIN products p ON s.id = p.supplier_id
+        GROUP BY s.id, s.name
+        ORDER BY total_value DESC, s.name ASC;
+        """
+    )
+    return cursor.fetchall()
+
+
+def report_low_stock(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return all products at or below their reorder level with the units short."""
+    cursor = conn.execute(
+        """
+        SELECT p.id, p.sku, p.name, p.category, p.quantity_in_stock, p.reorder_level,
+               (p.reorder_level - p.quantity_in_stock) AS units_short
+        FROM products p
+        WHERE p.quantity_in_stock <= p.reorder_level
+        ORDER BY units_short DESC, p.name ASC;
+        """
+    )
+    return cursor.fetchall()
+
+
+def report_sales_by_product(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return total units sold and total revenue for each sold product, highest revenue first."""
+    cursor = conn.execute(
+        """
+        SELECT p.id, p.sku, p.name,
+               SUM(si.quantity) AS units_sold,
+               SUM(si.quantity * si.price_at_sale) AS total_revenue
+        FROM products p
+        JOIN sale_items si ON p.id = si.product_id
+        GROUP BY p.id, p.sku, p.name
+        ORDER BY total_revenue DESC, p.name ASC;
+        """
+    )
+    return cursor.fetchall()
+
+
+def report_never_sold(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return all products that have never appeared in any sale record."""
+    cursor = conn.execute(
+        """
+        SELECT p.id, p.sku, p.name, p.category, p.unit_price, p.quantity_in_stock
+        FROM products p
+        LEFT JOIN sale_items si ON p.id = si.product_id
+        WHERE si.id IS NULL
+        ORDER BY p.name ASC;
+        """
+    )
+    return cursor.fetchall()
+
