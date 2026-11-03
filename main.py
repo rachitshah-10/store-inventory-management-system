@@ -263,6 +263,16 @@ def print_menu() -> None:
     print("8. Exit")
 
 
+def show_low_stock_banner(conn: sqlite3.Connection) -> None:
+    """Display an alert banner when the menu starts if products are low on stock."""
+    low_stock = db.report_low_stock(conn)
+    count = len(low_stock)
+    if count > 0:
+        print("\n" + "=" * 45)
+        print(f"  ALERT: {count} product(s) at or below reorder level!")
+        print("=" * 45)
+
+
 def main() -> None:
     """Run the interactive store menu."""
     try:
@@ -273,9 +283,11 @@ def main() -> None:
 
     with contextlib.closing(conn):
         db.init_db(conn)
+        show_low_stock_banner(conn)
 
         while True:
             print_menu()
+
             choice = get_text("Enter choice (1-8): ")
 
             try:
