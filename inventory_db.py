@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 
@@ -23,6 +24,22 @@ class InvalidProductDataError(InventoryError):
 
 class ProductHasSalesHistoryError(InventoryError):
     """Raised when attempting to delete a product that appears in sales history."""
+
+
+class InvalidStockChangeError(InventoryError):
+    """Raised when restock or adjustment amounts are invalid."""
+
+
+class InsufficientStockError(InventoryError):
+    """Raised when an adjustment or sale would reduce stock below zero."""
+
+
+class ProductNotFoundError(InventoryError):
+    """Raised when an operation references a product that does not exist."""
+
+
+class DuplicateSaleItemError(InventoryError):
+    """Raised when a single sale attempts to include the same product multiple times."""
 
 
 def get_default_db_path() -> str:
@@ -258,4 +275,153 @@ def report_never_sold(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         """
     )
     return cursor.fetchall()
+
+
+def restock(
+    conn: sqlite3.Connection,
+    product_id: int,
+    amount: int,
+    timestamp: str | None = None,
+) -> int:
+    """Add incoming stock for a product and log the movement in a single transaction."""
+    if amount <= 0:
+        raise InvalidStockChangeError("Restock amount must be greater than zero.")
+
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with conn:
+        prod = conn.execute(
+            "SELECT id, quantity_in_stock FROM products WHERE id = ?;",
+            (product_id,),
+        ).fetchone()
+        if prod is None:
+            raise ProductNotFoundError(f"Product ID {product_id} does not exist.")
+
+        conn.execute(
+            "UPDATE products SET quantity_in_stock = quantity_in_stock + ? WHERE id = ?;",
+            (amount, product_id),
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO stock_movements (product_id, change_amount, reason, created_at)
+            VALUES (?, ?, 'restock', ?);
+            """,
+            (product_id, amount, timestamp),
+        )
+        return cursor.lastrowid
+
+
+def adjust(
+    conn: sqlite3.Connection,
+    product_id: int,
+    change_amount: int,
+    timestamp: str | None = None,
+) -> int:
+    """Adjust stock for recount or damage and log the movement in a single transaction."""
+    if change_amount == 0:
+        raise InvalidStockChangeError("Adjustment amount cannot be zero.")
+
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with conn:
+        prod = conn.execute(
+            "SELECT id, quantity_in_stock FROM products WHERE id = ?;",
+            (product_id,),
+        ).fetchone()
+        if prod is None:
+            raise ProductNotFoundError(f"Product ID {product_id} does not exist.")
+
+        new_stock = prod["quantity_in_stock"] + change_amount
+        if new_stock < 0:
+            raise InsufficientStockError(
+                f"Adjustment of {change_amount} would reduce stock below zero (current: {prod['quantity_in_stock']})."
+            )
+
+        conn.execute(
+            "UPDATE products SET quantity_in_stock = ? WHERE id = ?;",
+            (new_stock, product_id),
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO stock_movements (product_id, change_amount, reason, created_at)
+            VALUES (?, ?, 'adjustment', ?);
+            """,
+            (product_id, change_amount, timestamp),
+        )
+        return cursor.lastrowid
+
+
+def record_sale(
+    conn: sqlite3.Connection,
+    items: list[tuple[int, int]],
+    timestamp: str | None = None,
+) -> int:
+    """Record a multi-item sale, deduct inventory, and log movements atomically."""
+    if not items:
+        raise InvalidStockChangeError("A sale must include at least one item.")
+
+    # Guard against listing the same product twice in the same sale
+    seen_products = set()
+    for product_id, quantity in items:
+        if product_id in seen_products:
+            raise DuplicateSaleItemError(
+                f"Product ID {product_id} is included more than once in the sale."
+            )
+        seen_products.add(product_id)
+        if quantity <= 0:
+            raise InvalidStockChangeError(
+                f"Quantity for product ID {product_id} must be greater than zero."
+            )
+
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with conn:
+        sale_cursor = conn.execute(
+            "INSERT INTO sales (sale_date) VALUES (?);",
+            (timestamp,),
+        )
+        sale_id = sale_cursor.lastrowid
+
+        for product_id, quantity in items:
+            prod = conn.execute(
+                "SELECT id, name, unit_price, quantity_in_stock FROM products WHERE id = ?;",
+                (product_id,),
+            ).fetchone()
+            if prod is None:
+                raise ProductNotFoundError(f"Product ID {product_id} does not exist.")
+
+            if prod["quantity_in_stock"] < quantity:
+                raise InsufficientStockError(
+                    f"Not enough stock for '{prod['name']}'. Requested {quantity}, but only {prod['quantity_in_stock']} in stock."
+                )
+
+            # Insert line item snapshotting the current price
+            conn.execute(
+                """
+                INSERT INTO sale_items (sale_id, product_id, quantity, price_at_sale)
+                VALUES (?, ?, ?, ?);
+                """,
+                (sale_id, product_id, quantity, prod["unit_price"]),
+            )
+
+            # Reduce product stock
+            conn.execute(
+                "UPDATE products SET quantity_in_stock = quantity_in_stock - ? WHERE id = ?;",
+                (quantity, product_id),
+            )
+
+            # Log stock movement for the sale
+            conn.execute(
+                """
+                INSERT INTO stock_movements (product_id, change_amount, reason, created_at)
+                VALUES (?, ?, 'sale', ?);
+                """,
+                (product_id, -quantity, timestamp),
+            )
+
+        return sale_id
+
 
