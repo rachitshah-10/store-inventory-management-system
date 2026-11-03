@@ -1,0 +1,26 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python byte-code and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Version control
+.git/
+.gitignore
+
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# Test caches
+.pytest_cache/
+
+# macOS files
+.DS_Store
