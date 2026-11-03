@@ -425,3 +425,21 @@ def record_sale(
         return sale_id
 
 
+def backup_database(source_conn: sqlite3.Connection, backup_path: str | Path) -> None:
+    """Create a live backup of the database to the specified file path."""
+    dest_path = Path(backup_path)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(dest_path) as dest_conn:
+        source_conn.backup(dest_conn)
+
+
+def restore_database(backup_path: str | Path, target_conn: sqlite3.Connection) -> None:
+    """Restore database contents from a backup file into the target connection."""
+    source_path = Path(backup_path)
+    if not source_path.exists():
+        raise FileNotFoundError(f"Backup file '{backup_path}' does not exist.")
+    with sqlite3.connect(source_path) as source_conn:
+        source_conn.backup(target_conn)
+
+
+
